@@ -1,10 +1,12 @@
 # Option Pricing & Stochastic Simulation
 
-A collection of five self-contained studies in quantitative finance, moving from
-empirical return statistics up to Black-Scholes delta hedging and implied
-volatility extraction. Originally developed as coursework in a stochastic
-calculus / option valuation module, refactored here into a clean, runnable
-project.
+A collection of eight self-contained studies in quantitative finance, moving
+from empirical return statistics up through Black-Scholes delta hedging,
+implied volatility extraction, binomial/Bermudan option trees, Monte Carlo
+pricing of exotic (Asian, lookback, snowball) options, and finite-difference
+PDE solvers. Originally developed as coursework across two assignments in a
+stochastic calculus / option valuation module, refactored here into a clean,
+runnable project.
 
 Everything is plain NumPy/SciPy/Matplotlib — no pricing libraries — so the
 math is fully visible in the code.
@@ -18,6 +20,9 @@ math is fully visible in the code.
 | 3 | [GBM path simulation](#3-gbm-path-simulation) | `src/gbm_simulation.py` | Euler discretization, lognormal convergence |
 | 4 | [Delta hedging & Black-Scholes](#4-delta-hedging--black-scholes) | `src/delta_hedging.py` | PDE derivation, discrete replication |
 | 5 | [Implied volatility](#5-implied-volatility) | `src/implied_volatility.py` | bisection solver, smile, term structure |
+| 6 | [Binomial American & Bermudan puts](#6-binomial-american--bermudan-puts) | `src/binomial_american_bermudan.py` | CRR tree, early-exercise boundary |
+| 7 | [Exotic options via Monte Carlo](#7-exotic-options-via-monte-carlo) | `src/exotic_options_mc.py` | Asian/lookback puts, MC Delta, snowball note |
+| 8 | [Finite-difference PDE solvers](#8-finite-difference-pde-solvers) | `src/pde_finite_difference.py` | BTCS, Crank-Nicolson, barrier option |
 
 ## Setup
 
@@ -27,7 +32,7 @@ python src/fetch_data.py      # downloads AAPL daily/weekly OHLC via yfinance ->
 ```
 
 Each `src/*.py` file can then be run standalone; figures are written to
-`results/q1` ... `results/q5`.
+`results/q1` ... `results/q8`.
 
 ```bash
 python src/returns_analysis.py
@@ -35,6 +40,9 @@ python src/clt_verification.py
 python src/gbm_simulation.py
 python src/delta_hedging.py
 python src/implied_volatility.py
+python src/binomial_american_bermudan.py
+python src/exotic_options_mc.py
+python src/pde_finite_difference.py
 ```
 
 ## Project structure
@@ -49,7 +57,10 @@ option-pricing-simulations/
     ├── clt_verification.py
     ├── gbm_simulation.py
     ├── delta_hedging.py
-    └── implied_volatility.py
+    ├── implied_volatility.py
+    ├── binomial_american_bermudan.py
+    ├── exotic_options_mc.py
+    └── pde_finite_difference.py
 ```
 
 ---
@@ -176,6 +187,105 @@ see with a deep, liquid chain (e.g. index options) — a useful reminder that
 implied-volatility surfaces are only as clean as the underlying option
 market's liquidity.
 
+## 6. Binomial American & Bermudan puts
+
+A Cox-Ross-Rubinstein (CRR) binomial tree is used to value an American
+put (`S = 1`, `E = 1.5`, `T = 3`, `r = 0.01`, `sigma = 0.3`, `M = 10000`
+steps). Up/down factors and the risk-neutral probability are
+
+```
+u = e^(sigma*sqrt(dt))
+d = e^(-sigma*sqrt(dt))
+p = (e^(r*dt) - d) / (u - d)
+```
+
+At every node the immediate exercise value is compared against the
+continuation (discounted expected future) value, and the larger of the two
+is taken as the option value — stepping this back from `T` to `0` gives the
+American price, **0.5531**. Tracking, at each step, the asset level where
+exercising first becomes optimal traces out the optimal exercise boundary:
+
+<p align="center">
+  <img src="results/q6/1a.png" width="700">
+</p>
+
+Restricting early exercise to a fixed grid of `[3, 6, 12, 36]` equally spaced
+dates (instead of every step) prices the corresponding **Bermudan** put:
+
+| Exercise dates | Value |
+|---|---|
+| 3  | 0.5498 |
+| 6  | 0.5515 |
+| 12 | 0.5523 |
+| 36 | 0.5529 |
+
+As the number of early-exercise dates increases, the Bermudan value
+converges towards the American value (0.5531) — exactly as expected, since
+the American put is the limit of a Bermudan put as the exercise grid is
+refined to every step.
+
+## 7. Exotic options via Monte Carlo
+
+Adjusts a standard Monte Carlo option pricer (simulate many GBM price paths,
+discount the average payoff) for two path-dependent payoffs, both using
+antithetic paths for variance reduction:
+
+```
+Asian put:     v = e^(-rT) * max(E - S_avg, 0)
+Lookback put:  v = e^(-rT) * max(E - S_min, 0)
+```
+
+With `S = 1`, `E = 1.2`, `sigma = 0.3`, `r = 0.01`, `T = 1`, 52 weekly
+monitoring dates and 10,000 simulations:
+
+| Option | Mean | 95% CI | Antithetic mean | 95% CI |
+|---|---|---|---|---|
+| Asian put | 0.2079 | [0.2051, 0.2108] | 0.2094 | [0.2090, 0.2097] |
+| Lookback put | 0.3882 | [0.3854, 0.3909] | 0.3891 | [0.3882, 0.3900] |
+
+**Delta.** Since `Delta = dV/dS`, the Asian put's Delta is estimated by
+bumping the initial price by a small `h = 0.001`, repricing on the *same*
+Brownian path, and differencing — again combined with antithetic sampling.
+This gives **Mean Delta: -0.8172** (standard error 0.0027). Repeating the
+estimate across an increasing number of paths and comparing to a
+high-sample reference value shows the usual Monte Carlo convergence:
+
+<p align="center">
+  <img src="results/q7/2b.png" width="600">
+</p>
+
+**Snowball note.** A path is simulated with `n = 12` monitoring dates; each
+time the asset stays within `[0.8, 1.2]` the payoff steps up by `dA = 0.2`
+from a base of `A0 = 1.0`. Monte Carlo pricing gives **Mean: 2.6066**,
+95% CI **[2.5936, 2.6196]**.
+
+## 8. Finite-difference PDE solvers
+
+**European put (BTCS).** Substituting `x = ln(S)` turns the Black-Scholes
+PDE into a constant-coefficient diffusion equation, solved here with a
+backward-time-centered-space (fully implicit) scheme over `x` in
+`[ln(1e-4), ln(4E)]`, with
+
+```
+u(x, 0)   = max(E - e^x, 0)
+u(0, tau) = E e^(r*tau)
+u(L, tau) = 0
+```
+
+For `S0 = 10`, `E = 10`, `r = 0.01`, `sigma = 0.3`, `T = 1`, the resulting
+European put price is **1.1210**.
+
+**Down-and-out call (Crank-Nicolson).** A Crank-Nicolson scheme solves the
+Black-Scholes PDE with dividend yield `q` directly in `S`-space over
+`[B, Smax]`, with the option value pinned to zero at the barrier `S = B`
+(knocked out) and a linear boundary condition at `Smax`. For `E = 4`,
+`S0 = 10`, `B = 9`, `sigma = 0.3`, `r = 0.01`, `q = 0.005`, `T = 1`, the
+time-zero value is **6.05**:
+
+<p align="center">
+  <img src="results/q8/3d.png" width="600">
+</p>
+
 ---
 
 ## Notes & limitations
@@ -188,3 +298,11 @@ market's liquidity.
   conclusions about LULU's actual volatility surface.
 - All simulations assume constant volatility and drift (plain GBM); no
   stochastic-volatility or jump dynamics are modeled.
+- `exotic_options_mc.py` calls `asian()`, `lookback()`, `delta()`, and
+  `snowball_option()` back-to-back under a single fixed seed, so each one
+  consumes the random stream where the previous left off. Numbers therefore
+  reproduce run-to-run but won't match the report figures to the last
+  decimal (which were generated by running each part in isolation) — they
+  agree to within ordinary Monte Carlo noise for `M = 10000` paths.
+- Question 1(c) of the second assignment (trinomial tree convergence) was
+  not completed in the original coursework and is not implemented here.
